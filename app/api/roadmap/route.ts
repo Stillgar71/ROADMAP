@@ -102,6 +102,14 @@ async function ensureSeedData() {
       ],
     });
 
+    await prisma.programIncrement.createMany({
+      data: [
+        { roadmapId: roadmap.id, name: 'PI-01', startDate: '2026-09-01', endDate: '2026-10-30' },
+        { roadmapId: roadmap.id, name: 'PI-02', startDate: '2026-11-01', endDate: '2026-12-25' },
+        { roadmapId: roadmap.id, name: 'PI-03', startDate: '2027-01-05', endDate: '2027-02-26' },
+      ],
+    });
+
     await prisma.backlogItem.createMany({
       data: [
         { organizationId: organization.id, title: 'Dependency tracker', status: 'New', priority: 1 },
@@ -122,13 +130,18 @@ async function getRoadmapData() {
     where: { organizationId: organization.id },
     include: {
       epics: { orderBy: { rank: 'asc' } },
-      features: { orderBy: { rank: 'asc' } },
+      features: { include: { epic: { select: { id: true, title: true } } }, orderBy: { rank: 'asc' } },
       programIncrements: true,
+      milestones: { include: { feature: { select: { id: true, title: true } } }, orderBy: { date: 'asc' } },
     },
   });
 
   const backlog = await prisma.backlogItem.findMany({
     where: { organizationId: organization.id },
+    include: {
+      epic: { select: { id: true, title: true } },
+      programIncrement: { select: { id: true, name: true } },
+    },
     orderBy: { priority: 'asc' },
   });
 
@@ -137,7 +150,13 @@ async function getRoadmapData() {
     epics: roadmap?.epics ?? [],
     features: roadmap?.features ?? [],
     programIncrements: roadmap?.programIncrements ?? [],
+    milestones: roadmap?.milestones ?? [],
     backlog,
+    savedRoadmaps: await prisma.roadmap.findMany({
+      where: { organizationId: organization.id, savedAt: { not: null } },
+      select: { id: true, name: true, startDate: true, endDate: true, savedAt: true },
+      orderBy: { savedAt: 'desc' },
+    }),
   };
 }
 
@@ -166,6 +185,60 @@ export async function POST(request: Request) {
     }
 
     switch (action) {
+      case 'save-roadmap': {
+        const savedRoadmap = await prisma.roadmap.update({
+          where: { id: roadmap.id },
+          data: { savedAt: new Date() },
+          select: { id: true, name: true, startDate: true, endDate: true, savedAt: true },
+        });
+
+        return NextResponse.json({ roadmap: savedRoadmap });
+      }
+
+      case 'create-milestone': {
+        const { name, date, status = 'Green', type = 'Release', featureId } = body ?? {};
+        if (!name || !String(name).trim() || !date) {
+          return NextResponse.json({ error: 'Milestone name and date are required' }, { status: 400 });
+        }
+        if (type === 'Feature' && !featureId) {
+          return NextResponse.json({ error: 'A feature is required for a Feature milestone' }, { status: 400 });
+        }
+
+        const milestone = await prisma.milestone.create({
+          data: { roadmapId: roadmap.id, name: String(name).trim(), date, status, type, featureId: type === 'Feature' ? featureId || null : null },
+        });
+
+        return NextResponse.json({ milestone });
+      }
+
+      case 'update-milestone': {
+        const { id, name, date, status, type, featureId } = body ?? {};
+        if (!id) return NextResponse.json({ error: 'Milestone id required' }, { status: 400 });
+        if (type === 'Feature' && !featureId) {
+          return NextResponse.json({ error: 'A feature is required for a Feature milestone' }, { status: 400 });
+        }
+
+        const milestone = await prisma.milestone.update({
+          where: { id },
+          data: {
+            name: name ?? undefined,
+            date: date ?? undefined,
+            status: status ?? undefined,
+            type: type ?? undefined,
+            featureId: type === 'Feature' ? featureId || null : type === 'Release' ? null : undefined,
+          },
+        });
+
+        return NextResponse.json({ milestone });
+      }
+
+      case 'delete-milestone': {
+        const { id } = body ?? {};
+        if (!id) return NextResponse.json({ error: 'Milestone id required' }, { status: 400 });
+        await prisma.milestone.delete({ where: { id } });
+        return NextResponse.json({ success: true });
+      }
+
       case 'create-epic': {
         const { title, status = 'Planned', startDate, endDate } = body ?? {};
         if (!title || !String(title).trim()) {
@@ -259,8 +332,13 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: 'Program increment id required' }, { status: 400 });
         }
 
-        await prisma.programIncrement.delete({ where: { id } });
-        return NextResponse.json({ success: true });
+        try {
+          await prisma.programIncrement.delete({ where: { id } });
+          return NextResponse.json({ success: true });
+        } catch (deleteError) {
+          console.error('Error deleting PI:', deleteError);
+          return NextResponse.json({ error: `Failed to delete PI: ${deleteError instanceof Error ? deleteError.message : 'Unknown error'}` }, { status: 500 });
+        }
       }
 
       case 'create-feature': {
@@ -277,7 +355,7 @@ export async function POST(request: Request) {
             pi,
             startDate: startDate ?? '2027-01-01',
             endDate: endDate ?? '2027-02-15',
-            status: 'New',
+            status: 'Planned',
             rank: nextRank,
           },
         });
@@ -286,7 +364,7 @@ export async function POST(request: Request) {
       }
 
       case 'create-backlog': {
-        const { title, status = 'New' } = body ?? {};
+        const { title, status = 'New', epicId, programIncrementId } = body ?? {};
         const items = await prisma.backlogItem.findMany({ where: { organizationId: organization.id } });
 
         const backlogItem = await prisma.backlogItem.create({
@@ -294,6 +372,8 @@ export async function POST(request: Request) {
             organizationId: organization.id,
             title,
             status,
+            epicId: epicId ?? null,
+            programIncrementId: programIncrementId ?? null,
             priority: items.length + 1,
           },
         });
@@ -317,10 +397,22 @@ export async function POST(request: Request) {
       }
 
       case 'update-feature': {
-        const { id, title, team, pi, status, startDate, endDate } = body ?? {};
+        const { id, title, team, pi, status, startDate, endDate, epicId } = body ?? {};
         if (!id) {
           return NextResponse.json({ error: 'Feature id required' }, { status: 400 });
         }
+        if (status && !['Planned', 'Committed', 'In progress', 'Blocked'].includes(status)) {
+          return NextResponse.json({ error: 'Feature status must be Planned, Committed, In progress, or Blocked' }, { status: 400 });
+        }
+
+        const existingFeature = await prisma.feature.findUnique({ where: { id } });
+        const epicChanged = epicId !== undefined && (epicId || null) !== existingFeature?.epicId;
+        const nextRank = epicChanged
+          ? ((await prisma.feature.aggregate({
+              where: { roadmapId: roadmap.id, epicId: epicId || null },
+              _max: { rank: true },
+            }))._max.rank ?? 0) + 1
+          : undefined;
 
         const feature = await prisma.feature.update({
           where: { id },
@@ -331,6 +423,8 @@ export async function POST(request: Request) {
             status: status ?? undefined,
             startDate: startDate ?? undefined,
             endDate: endDate ?? undefined,
+            epicId: epicId === undefined ? undefined : epicId || null,
+            rank: nextRank,
           },
         });
 
@@ -354,10 +448,10 @@ export async function POST(request: Request) {
         }
 
         for (let index = 0; index < order.length; index += 1) {
-          const id = order[index];
+          const { id, rank } = order[index];
           await prisma.feature.update({
             where: { id },
-            data: { rank: index + 1 },
+            data: { rank: rank ?? index + 1 },
           });
         }
 
@@ -382,7 +476,7 @@ export async function POST(request: Request) {
       }
 
       case 'update-backlog': {
-        const { id, title, status } = body ?? {};
+        const { id, title, status, epicId, programIncrementId } = body ?? {};
         if (!id) {
           return NextResponse.json({ error: 'Backlog item id required' }, { status: 400 });
         }
@@ -392,6 +486,8 @@ export async function POST(request: Request) {
           data: {
             title: title ?? undefined,
             status: status ?? undefined,
+            epicId: epicId === undefined ? undefined : epicId || null,
+            programIncrementId: programIncrementId === undefined ? undefined : programIncrementId || null,
           },
         });
 
@@ -414,7 +510,10 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: 'Backlog item id required' }, { status: 400 });
         }
 
-        const backlogItem = await prisma.backlogItem.findUnique({ where: { id: backlogId } });
+        const backlogItem = await prisma.backlogItem.findUnique({
+          where: { id: backlogId },
+          include: { programIncrement: true },
+        });
         if (!backlogItem) {
           return NextResponse.json({ error: 'Backlog item not found' }, { status: 404 });
         }
@@ -428,9 +527,10 @@ export async function POST(request: Request) {
           data: {
             roadmapId: roadmap.id,
             title: backlogItem.title,
+            epicId: backlogItem.epicId,
             team: 'Program',
-            pi: 'PI-03',
-            status: 'New',
+            pi: backlogItem.programIncrement?.name ?? 'Unassigned',
+            status: 'Planned',
             rank: featurePosition >= 0 ? featurePosition + 1 : features.length + 1,
             startDate: '2027-01-01',
             endDate: '2027-02-15',
@@ -446,7 +546,8 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Unsupported action' }, { status: 400 });
     }
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error('Failed to update roadmap data:', error);
-    return NextResponse.json({ error: 'Failed to update roadmap data' }, { status: 500 });
+    return NextResponse.json({ error: `Failed to update roadmap data: ${errorMessage}` }, { status: 500 });
   }
 }

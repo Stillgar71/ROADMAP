@@ -36,7 +36,22 @@ model Roadmap {
   programIncrements  ProgramIncrement[]
   epics              Epic[]
   features           Feature[]
+  milestones         Milestone[]
+  savedAt            DateTime?
   createdAt          DateTime          @default(now())
+}
+
+model Milestone {
+  id        String   @id @default(cuid())
+  roadmapId String
+  roadmap   Roadmap  @relation(fields: [roadmapId], references: [id])
+  name      String
+  date      String
+  status    String   @default("Planned")
+  type      String   @default("Release")
+  featureId String?
+  feature   Feature? @relation(fields: [featureId], references: [id])
+  createdAt DateTime @default(now())
 }
 
 model ProgramIncrement {
@@ -46,6 +61,7 @@ model ProgramIncrement {
   name      String
   startDate String
   endDate   String
+  backlogItems BacklogItem[]
   createdAt DateTime @default(now())
 }
 
@@ -59,6 +75,8 @@ model Epic {
   startDate   String?
   endDate     String?
   rank        Int      @default(0)
+  features    Feature[]
+  backlogItems BacklogItem[]
   createdAt   DateTime @default(now())
 }
 
@@ -67,6 +85,7 @@ model Feature {
   roadmapId   String
   roadmap     Roadmap  @relation(fields: [roadmapId], references: [id])
   epicId      String?
+  epic        Epic?    @relation(fields: [epicId], references: [id])
   title       String
   description String?
   status      String   @default("planned")
@@ -75,6 +94,7 @@ model Feature {
   rank        Int      @default(0)
   pi          String?
   team        String?
+  milestones  Milestone[]
   createdAt   DateTime @default(now())
 }
 
@@ -87,6 +107,10 @@ model BacklogItem {
   type           String       @default("feature")
   status         String       @default("new")
   priority       Int          @default(0)
+  epicId         String?
+  epic           Epic?        @relation(fields: [epicId], references: [id])
+  programIncrementId String?
+  programIncrement ProgramIncrement? @relation(fields: [programIncrementId], references: [id])
   createdAt      DateTime     @default(now())
 }
 

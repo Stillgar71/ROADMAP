@@ -12,10 +12,11 @@ import {
   SortableContext,
   arrayMove,
   rectSortingStrategy,
+  verticalListSortingStrategy,
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 type Feature = {
   id: string;
@@ -27,6 +28,7 @@ type Feature = {
   end: string;
   status: string;
   epic: string;
+  epicId: string;
 };
 
 type BacklogItem = {
@@ -34,6 +36,10 @@ type BacklogItem = {
   name: string;
   priority: number;
   status: string;
+  epicId: string;
+  epicName: string;
+  programIncrementId?: string;
+  programIncrementName?: string;
 };
 
 type Epic = {
@@ -57,6 +63,7 @@ type RoadmapPayload = {
     name?: string;
     startDate?: string;
     endDate?: string;
+    savedAt?: string | null;
   };
   epics?: Array<{
     id?: string;
@@ -75,8 +82,10 @@ type RoadmapPayload = {
     startDate?: string;
     endDate?: string;
     status?: string;
-    epic?: string;
     epicId?: string;
+    epic?: { id?: string; title?: string };
+    programIncrementId?: string;
+    programIncrement?: { id?: string; name?: string };
   }>;
   programIncrements?: Array<{
     id?: string;
@@ -89,6 +98,10 @@ type RoadmapPayload = {
     title?: string;
     priority?: number;
     status?: string;
+    epicId?: string;
+    epic?: { id?: string; title?: string };
+    programIncrementId?: string;
+    programIncrement?: { id?: string; name?: string };
   }>;
 };
 
@@ -98,28 +111,8 @@ const defaultRoadmap = {
   endDate: '2027-03-31',
 };
 
-function daysBetween(start: string, end: string) {
-  const startDate = new Date(start);
-  const endDate = new Date(end);
-  return Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
-}
-
-function calculateLeft(date: string, timelineStart: string, timelineEnd: string) {
-  const start = new Date(timelineStart);
-  const current = new Date(date);
-  const total = daysBetween(timelineStart, timelineEnd);
-  const offset = Math.round((current.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-  return (offset / total) * 100;
-}
-
-function calculateWidth(start: string, end: string, timelineStart: string, timelineEnd: string) {
-  const total = daysBetween(timelineStart, timelineEnd);
-  const duration = daysBetween(start, end);
-  return (duration / total) * 100;
-}
-
-function SortableFeatureCard({ feature, onSelect }: { feature: Feature; onSelect: (id: string) => void }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: feature.id });
+function SortableFeatureCard({ feature, children }: { feature: Feature; children: ReactNode }) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({ id: feature.id });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -129,22 +122,31 @@ function SortableFeatureCard({ feature, onSelect }: { feature: Feature; onSelect
   return (
     <div
       ref={setNodeRef}
-      style={style}
-      className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-3"
-      {...attributes}
-      {...listeners}
-      onClick={() => onSelect(feature.id)}
+      style={{ ...style, touchAction: 'none' }}
+      className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3"
     >
-      <div>
-        <div className="font-medium">#{feature.rank} {feature.name}</div>
-        <div className="text-xs text-slate-500">{feature.team} • {feature.pi}</div>
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="font-medium">#{feature.rank} {feature.name}</div>
+          <div className="text-xs text-slate-500">{feature.team} • {feature.pi}</div>
+        </div>
+        <button
+          ref={setActivatorNodeRef}
+          type="button"
+          aria-label={`Drag ${feature.name} to change rank`}
+          className="cursor-grab rounded px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-500 hover:bg-slate-200 active:cursor-grabbing"
+          {...attributes}
+          {...listeners}
+        >
+          Rank {feature.rank}
+        </button>
       </div>
-      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Rank {feature.rank}</span>
+      {children}
     </div>
   );
 }
 
-function SortableBacklogCard({ item, onSelect }: { item: BacklogItem; onSelect: (id: string) => void }) {
+function SortableBacklogCard({ item }: { item: BacklogItem }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: item.id });
 
   const style = {
@@ -159,7 +161,6 @@ function SortableBacklogCard({ item, onSelect }: { item: BacklogItem; onSelect: 
       className="flex items-center justify-between rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3"
       {...attributes}
       {...listeners}
-      onClick={() => onSelect(item.id)}
     >
       <span className="font-medium">{item.name}</span>
       <span className="text-sm text-slate-500">#{item.priority}</span>
@@ -177,9 +178,15 @@ export default function HomePage() {
     startDate: defaultRoadmap.startDate,
     endDate: defaultRoadmap.endDate,
   });
-  const [selectedBacklogId, setSelectedBacklogId] = useState<string | null>(null);
-  const [featureForm, setFeatureForm] = useState({ title: '', team: 'Platform', pi: 'PI-03' });
-  const [backlogForm, setBacklogForm] = useState({ title: '', status: 'New' });
+  const [planningMessage, setPlanningMessage] = useState<string | null>(null);
+  const [roadmapSavedAt, setRoadmapSavedAt] = useState<string | null>(null);
+  const [savingRoadmap, setSavingRoadmap] = useState(false);
+  const [planningTab, setPlanningTab] = useState<'priority' | 'backlog' | 'epics' | 'program-increments'>('priority');
+  const [backlogForm, setBacklogForm] = useState({ title: '', status: 'New', epicName: '' });
+  const [piForm, setPiForm] = useState({ name: '', startDate: defaultRoadmap.startDate, endDate: defaultRoadmap.endDate });
+  const [editingPiId, setEditingPiId] = useState<string | null>(null);
+  const [editingPiData, setEditingPiData] = useState<Partial<ProgramIncrement> | null>(null);
+  const [piActionLoading, setPiActionLoading] = useState<{ [key: string]: boolean }>({});
   const [loading, setLoading] = useState(true);
 
   const refreshRoadmapData = async () => {
@@ -207,7 +214,8 @@ export default function HomePage() {
         start: item.startDate ?? defaultRoadmap.startDate,
         end: item.endDate ?? defaultRoadmap.endDate,
         status: item.status ?? 'Planned',
-        epic: item.epic ?? item.epicId ?? 'Program Planning',
+        epic: item.epic?.title ?? item.epicId ?? 'Unassigned',
+        epicId: item.epicId ?? item.epic?.id ?? '',
       }));
 
       const mappedBacklog: BacklogItem[] = (payload.backlog ?? []).map((item) => ({
@@ -215,6 +223,10 @@ export default function HomePage() {
         name: item.title ?? 'Untitled backlog item',
         priority: item.priority ?? 0,
         status: item.status ?? 'New',
+        epicId: item.epicId ?? '',
+        programIncrementId: item.programIncrementId ?? '',
+        programIncrementName: item.programIncrement?.name ?? '',
+        epicName: item.epic?.title ?? '',
       }));
 
       const mappedProgramIncrements: ProgramIncrement[] = (payload.programIncrements ?? []).map((item) => ({
@@ -229,28 +241,11 @@ export default function HomePage() {
         startDate: payload.roadmap?.startDate ?? defaultRoadmap.startDate,
         endDate: payload.roadmap?.endDate ?? defaultRoadmap.endDate,
       });
-      setEpics(mappedEpics.length > 0 ? mappedEpics : [
-        { id: 'epic-1', name: 'Platform Modernization', owner: 'Architecture', start: '2026-09-01', end: '2026-12-15', status: 'On track' },
-        { id: 'epic-2', name: 'Customer Data Integration', owner: 'Data', start: '2026-10-01', end: '2027-01-30', status: 'At risk' },
-        { id: 'epic-3', name: 'AI Enablement', owner: 'Product', start: '2026-11-15', end: '2027-03-10', status: 'Planned' },
-      ]);
-      setFeatures(mappedFeatures.length > 0 ? mappedFeatures : [
-        { id: 'feature-1', name: 'Shared API Gateway', rank: 1, pi: 'PI-01', team: 'Platform', start: '2026-09-01', end: '2026-10-15', status: 'Committed', epic: 'Platform Modernization' },
-        { id: 'feature-2', name: 'Data quality controls', rank: 2, pi: 'PI-01', team: 'Data', start: '2026-09-20', end: '2026-11-20', status: 'In progress', epic: 'Customer Data Integration' },
-        { id: 'feature-3', name: 'Portfolio reporting', rank: 3, pi: 'PI-02', team: 'PMO', start: '2026-11-01', end: '2027-01-15', status: 'Planned', epic: 'AI Enablement' },
-        { id: 'feature-4', name: 'Team onboarding flow', rank: 4, pi: 'PI-02', team: 'Delivery', start: '2026-12-01', end: '2027-02-15', status: 'Planned', epic: 'Platform Modernization' },
-      ]);
-      setBacklog(mappedBacklog.length > 0 ? mappedBacklog : [
-        { id: 'backlog-1', name: 'Dependency tracker', priority: 1, status: 'New' },
-        { id: 'backlog-2', name: 'Risk heatmap', priority: 2, status: 'New' },
-        { id: 'backlog-3', name: 'Portfolio export', priority: 3, status: 'Ready' },
-        { id: 'backlog-4', name: 'Cross-team alignment dashboard', priority: 4, status: 'Ready' },
-      ]);
-      setProgramIncrements(mappedProgramIncrements.length > 0 ? mappedProgramIncrements : [
-        { id: 'pi-01', name: 'PI-01', startDate: '2026-09-01', endDate: '2026-10-30' },
-        { id: 'pi-02', name: 'PI-02', startDate: '2026-11-01', endDate: '2026-12-25' },
-        { id: 'pi-03', name: 'PI-03', startDate: '2027-01-05', endDate: '2027-02-26' },
-      ]);
+      setRoadmapSavedAt(payload.roadmap?.savedAt ?? null);
+      setEpics(mappedEpics);
+      setFeatures(mappedFeatures);
+      setBacklog(mappedBacklog);
+      setProgramIncrements(mappedProgramIncrements.length > 0 ? mappedProgramIncrements : []);
     } catch (error) {
       console.error('Failed to load roadmap data', error);
     } finally {
@@ -262,19 +257,53 @@ export default function HomePage() {
     refreshRoadmapData();
   }, []);
 
+  // Sync PI form dates with roadmap dates when roadmapMeta changes
+  useEffect(() => {
+    setPiForm((current) => ({
+      ...current,
+      startDate: roadmapMeta.startDate,
+      endDate: roadmapMeta.endDate,
+    }));
+  }, [roadmapMeta.startDate, roadmapMeta.endDate]);
+
+  const handleSaveRoadmap = async () => {
+    setSavingRoadmap(true);
+    try {
+      const response = await fetch('/api/roadmap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'save-roadmap' }),
+      });
+      if (!response.ok) throw new Error('Unable to save roadmap');
+      const data = await response.json();
+      setRoadmapSavedAt(data.roadmap?.savedAt ?? new Date().toISOString());
+    } catch (error) {
+      console.error('Failed to save roadmap', error);
+    } finally {
+      setSavingRoadmap(false);
+    }
+  };
+
   const roadmapSummary = useMemo(
     () => [
-      ['Roadmaps', '4'],
-      ['Epics', String(epics.length || 12)],
-      ['Features', String(features.length || 38)],
-      ['Backlog', String(backlog.length || 21)],
+      ['Roadmaps', String(1)],
+      ['Epics', String(epics.length)],
+      ['Features', String(features.length)],
+      ['Backlog', String(backlog.length)],
     ],
     [backlog.length, epics.length, features.length],
   );
 
+  const featureGroups = useMemo(() => {
+    const groups = epics.map((epic) => ({ epic, features: features.filter((feature) => feature.epicId === epic.id) }));
+    const unassigned = features.filter((feature) => !feature.epicId);
+    if (unassigned.length > 0) groups.push({ epic: { id: '', name: 'Unassigned', owner: '', start: '', end: '', status: '' }, features: unassigned });
+    return groups;
+  }, [epics, features]);
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
-  const handleFeatureDragEnd = async (event: DragEndEvent) => {
+  const handleFeatureDragEnd = async (event: DragEndEvent, epicId: string) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
 
@@ -282,21 +311,31 @@ export default function HomePage() {
     const newIndex = features.findIndex((feature) => feature.id === String(over.id));
     if (oldIndex === -1 || newIndex === -1) return;
 
-    const reordered = arrayMove(features, oldIndex, newIndex).map((feature, index) => ({
-      ...feature,
-      rank: index + 1,
-    }));
+    const activeFeature = features[oldIndex];
+    if (activeFeature.epicId !== epicId || features[newIndex].epicId !== epicId) return;
+
+    const group = features.filter((feature) => feature.epicId === epicId);
+    const groupOldIndex = group.findIndex((feature) => feature.id === String(active.id));
+    const groupNewIndex = group.findIndex((feature) => feature.id === String(over.id));
+    const reorderedGroup = arrayMove(group, groupOldIndex, groupNewIndex).map((feature, index) => ({ ...feature, rank: index + 1 }));
+    const reordered = features.map((feature) => reorderedGroup.find((item) => item.id === feature.id) ?? feature);
 
     setFeatures(reordered);
 
     try {
-      await fetch('/api/roadmap', {
+      const response = await fetch('/api/roadmap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'reorder-features', order: reordered.map((item) => item.id) }),
+        body: JSON.stringify({
+          action: 'reorder-features',
+          order: reorderedGroup.map((item) => ({ id: item.id, rank: item.rank })),
+        }),
       });
+      if (!response.ok) throw new Error('Feature rank update failed');
+      await refreshRoadmapData();
     } catch (error) {
       console.error('Failed to persist feature ordering', error);
+      await refreshRoadmapData();
     }
   };
 
@@ -338,36 +377,37 @@ export default function HomePage() {
         throw new Error('Promotion failed');
       }
 
-      setSelectedBacklogId(null);
+      setPlanningMessage('The backlog item is being moved to the priority stack for planning.');
       await refreshRoadmapData();
     } catch (error) {
       console.error('Failed to promote backlog item', error);
     }
   };
 
-  const handleCreateFeature = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    if (!featureForm.title.trim()) return;
+  const handleUpdateFeature = async (id: string, updates: Partial<Feature>) => {
+    setFeatures((current) => current.map((feature) => feature.id === id ? { ...feature, ...updates } : feature));
 
     try {
-      await fetch('/api/roadmap', {
+      const response = await fetch('/api/roadmap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'create-feature',
-          title: featureForm.title.trim(),
-          team: featureForm.team,
-          pi: featureForm.pi,
-          startDate: defaultRoadmap.startDate,
-          endDate: '2027-02-15',
+          action: 'update-feature',
+          id,
+          title: updates.name,
+          team: updates.team,
+          pi: updates.pi,
+          status: updates.status,
+          startDate: updates.start,
+          endDate: updates.end,
+          epicId: updates.epicId,
         }),
       });
-
-      setFeatureForm({ title: '', team: 'Platform', pi: 'PI-03' });
+      if (!response.ok) throw new Error('Feature update failed');
       await refreshRoadmapData();
     } catch (error) {
-      console.error('Failed to create feature', error);
+      console.error('Failed to update feature', error);
+      await refreshRoadmapData();
     }
   };
 
@@ -384,10 +424,11 @@ export default function HomePage() {
           action: 'create-backlog',
           title: backlogForm.title.trim(),
           status: backlogForm.status,
+          epicId: epics.find((epic) => epic.name === backlogForm.epicName)?.id ?? null,
         }),
       });
 
-      setBacklogForm({ title: '', status: 'New' });
+      setBacklogForm({ title: '', status: 'New', epicName: '' });
       await refreshRoadmapData();
     } catch (error) {
       console.error('Failed to create backlog item', error);
@@ -423,34 +464,55 @@ export default function HomePage() {
   const handleCreateProgramIncrement = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    const nameInput = event.currentTarget.elements.namedItem('pi-name') as HTMLInputElement | null;
-    const startInput = event.currentTarget.elements.namedItem('pi-start') as HTMLInputElement | null;
-    const endInput = event.currentTarget.elements.namedItem('pi-end') as HTMLInputElement | null;
-    const name = nameInput?.value?.trim();
-    if (!name) return;
+    if (!piForm.name.trim() || !piForm.startDate || !piForm.endDate) {
+      console.warn('PI form validation failed - missing required fields');
+      return;
+    }
+
+    setPiActionLoading((current) => ({ ...current, create: true }));
 
     try {
-      await fetch('/api/roadmap', {
+      const response = await fetch('/api/roadmap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'create-pi',
-          name,
-          startDate: startInput?.value ?? roadmapMeta.startDate,
-          endDate: endInput?.value ?? roadmapMeta.endDate,
+          name: piForm.name.trim(),
+          startDate: piForm.startDate,
+          endDate: piForm.endDate,
         }),
       });
 
-      if (nameInput) nameInput.value = '';
-      if (startInput) startInput.value = roadmapMeta.startDate;
-      if (endInput) endInput.value = roadmapMeta.endDate;
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error('Create PI failed:', data);
+        alert(`Error creating PI: ${data.error || 'Unknown error'}`);
+        return;
+      }
+
+      console.log('PI created successfully:', data);
+
+      // Reset form with current roadmap dates
+      setPiForm({ name: '', startDate: roadmapMeta.startDate, endDate: roadmapMeta.endDate });
       await refreshRoadmapData();
     } catch (error) {
-      console.error('Failed to create program increment', error);
+      console.error('Failed to create program increment:', error);
+      alert('Failed to create program increment. Check the console for details.');
+    } finally {
+      setPiActionLoading((current) => ({ ...current, create: false }));
     }
   };
 
   const handleUpdateEpic = async (id: string, updates: Partial<Epic>) => {
+    // Update local state immediately for instant feedback
+    setEpics((current) =>
+      current.map((epic) =>
+        epic.id === id ? { ...epic, ...updates } : epic
+      )
+    );
+
+    // Then persist to server
     try {
       await fetch('/api/roadmap', {
         method: 'POST',
@@ -468,6 +530,8 @@ export default function HomePage() {
       await refreshRoadmapData();
     } catch (error) {
       console.error('Failed to update epic', error);
+      // Refresh data on error to revert any local changes
+      await refreshRoadmapData();
     }
   };
 
@@ -486,8 +550,24 @@ export default function HomePage() {
   };
 
   const handleUpdateProgramIncrement = async (id: string, updates: Partial<ProgramIncrement>) => {
+    if (!updates.name || !updates.startDate || !updates.endDate) {
+      console.warn('PI update validation failed - missing required fields');
+      alert('Please fill in all required fields (name, start date, end date)');
+      return;
+    }
+
+    setPiActionLoading((current) => ({ ...current, [id]: true }));
+
+    // Update local state immediately for instant feedback
+    setProgramIncrements((current) =>
+      current.map((pi) =>
+        pi.id === id ? { ...pi, ...updates } : pi
+      )
+    );
+
+    // Then persist to server
     try {
-      await fetch('/api/roadmap', {
+      const response = await fetch('/api/roadmap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -499,23 +579,70 @@ export default function HomePage() {
         }),
       });
 
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error('Update failed:', data);
+        alert(`Error updating PI: ${data.error || 'Unknown error'}`);
+        // Refresh data on error to revert any local changes
+        await refreshRoadmapData();
+        return;
+      }
+
+      console.log('PI updated successfully');
+      setEditingPiId(null);
+      setEditingPiData(null);
       await refreshRoadmapData();
     } catch (error) {
-      console.error('Failed to update program increment', error);
+      console.error('Failed to update program increment:', error);
+      alert('Failed to update program increment. Check the console for details.');
+      // Refresh data on error to revert any local changes
+      await refreshRoadmapData();
+    } finally {
+      setPiActionLoading((current) => {
+        const updated = { ...current };
+        delete updated[id];
+        return updated;
+      });
     }
   };
 
   const handleDeleteProgramIncrement = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this Program Increment?')) {
+      return;
+    }
+
+    setPiActionLoading((current) => ({ ...current, [id]: true }));
+
     try {
-      await fetch('/api/roadmap', {
+      const response = await fetch('/api/roadmap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'delete-pi', id }),
       });
 
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error('Delete failed:', data);
+        alert(`Error deleting PI: ${data.error || 'Unknown error'}`);
+        return;
+      }
+
+      console.log('PI deleted successfully');
+
+      // Update local state immediately for instant feedback
+      setProgramIncrements((current) => current.filter((pi) => pi.id !== id));
       await refreshRoadmapData();
     } catch (error) {
-      console.error('Failed to delete program increment', error);
+      console.error('Failed to delete program increment:', error);
+      alert('Failed to delete program increment. Check the console for details.');
+    } finally {
+      setPiActionLoading((current) => {
+        const updated = { ...current };
+        delete updated[id];
+        return updated;
+      });
     }
   };
 
@@ -538,44 +665,15 @@ export default function HomePage() {
     }
   };
 
-  const handleUpdateFeature = async (id: string, updates: Partial<Feature>) => {
-    try {
-      await fetch('/api/roadmap', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'update-feature',
-          id,
-          title: updates.name,
-          team: updates.team,
-          pi: updates.pi,
-          status: updates.status,
-          startDate: updates.start,
-          endDate: updates.end,
-        }),
-      });
-
-      await refreshRoadmapData();
-    } catch (error) {
-      console.error('Failed to update feature', error);
-    }
-  };
-
-  const handleDeleteFeature = async (id: string) => {
-    try {
-      await fetch('/api/roadmap', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'delete-feature', id }),
-      });
-
-      await refreshRoadmapData();
-    } catch (error) {
-      console.error('Failed to delete feature', error);
-    }
-  };
-
   const handleUpdateBacklog = async (id: string, updates: Partial<BacklogItem>) => {
+    // Update local state immediately for instant feedback
+    setBacklog((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, ...updates } : item
+      )
+    );
+
+    // Then persist to server
     try {
       await fetch('/api/roadmap', {
         method: 'POST',
@@ -585,13 +683,26 @@ export default function HomePage() {
           id,
           title: updates.name,
           status: updates.status,
+          epicId: updates.epicId,
+          programIncrementId: updates.programIncrementId,
         }),
       });
 
       await refreshRoadmapData();
     } catch (error) {
       console.error('Failed to update backlog item', error);
+      // Refresh data on error to revert any local changes
+      await refreshRoadmapData();
     }
+  };
+
+  const handleBacklogStatusChange = async (item: BacklogItem, status: string) => {
+    if (status === 'Ready' && item.status !== 'Ready') {
+      await handleFeaturePromotion(item.id, features[0]?.id);
+      return;
+    }
+
+    await handleUpdateBacklog(item.id, { status });
   };
 
   const handleDeleteBacklog = async (id: string) => {
@@ -655,7 +766,10 @@ export default function HomePage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <button className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700">Roadmaps</button>
+            <a href="/roadmaps" className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700">Roadmaps</a>
+            <button type="button" onClick={handleSaveRoadmap} disabled={savingRoadmap} className="rounded-lg border border-brand-200 bg-brand-50 px-4 py-2 text-sm font-semibold text-brand-700 disabled:opacity-50">
+              {savingRoadmap ? 'Saving...' : roadmapSavedAt ? 'Save roadmap again' : 'Save roadmap'}
+            </button>
             <button className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm">New roadmap</button>
           </div>
         </header>
@@ -669,228 +783,237 @@ export default function HomePage() {
           ))}
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-soft">
+        <div className="flex w-fit flex-wrap gap-1 rounded-lg border border-slate-200 bg-white p-1">
+          <button type="button" onClick={() => setPlanningTab('epics')} className={`rounded-md px-4 py-2 text-sm font-semibold ${planningTab === 'epics' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>Epics</button>
+          <button type="button" onClick={() => setPlanningTab('program-increments')} className={`rounded-md px-4 py-2 text-sm font-semibold ${planningTab === 'program-increments' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>Program increments</button>
+          <button type="button" onClick={() => setPlanningTab('backlog')} className={`rounded-md px-4 py-2 text-sm font-semibold ${planningTab === 'backlog' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>Backlog</button>
+          <button type="button" onClick={() => setPlanningTab('priority')} className={`rounded-md px-4 py-2 text-sm font-semibold ${planningTab === 'priority' ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>Priority stack</button>
+        </div>
+
+        <section className="space-y-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-xl font-semibold">Roadmap timeline</h2>
-              <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700">{roadmapMeta.startDate} to {roadmapMeta.endDate}</span>
+              <h2 className="text-xl font-semibold">Roadmap chart</h2>
+              <a
+                href="/chart"
+                className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+              >
+                View full chart →
+              </a>
             </div>
+            <p className="text-sm text-slate-600">
+              Open the roadmap timeline visualization in a dedicated view to see all epics and program increments.
+            </p>
+          </div>
+        </section>
 
-            <div className="mb-4 grid grid-cols-7 gap-2 text-center text-xs font-medium uppercase tracking-wide text-slate-500">
-              <span>Sep</span>
-              <span>Oct</span>
-              <span>Nov</span>
-              <span>Dec</span>
-              <span>Jan</span>
-              <span>Feb</span>
-              <span>Mar</span>
-            </div>
+        {planningTab === 'program-increments' && (
+        <section className="space-y-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-soft">
+            <h2 className="mb-4 text-xl font-semibold">Program increments</h2>
+            <form onSubmit={handleCreateProgramIncrement} className="mb-4 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <input
+                value={piForm.name}
+                onChange={(event) => setPiForm((current) => ({ ...current, name: event.target.value }))}
+                placeholder="PI name"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+              />
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                <input
+                  type="date"
+                  value={piForm.startDate}
+                  onChange={(event) => setPiForm((current) => ({ ...current, startDate: event.target.value }))}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+                />
+                <input
+                  type="date"
+                  value={piForm.endDate}
+                  onChange={(event) => setPiForm((current) => ({ ...current, endDate: event.target.value }))}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={piActionLoading.create}
+                  className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {piActionLoading.create ? 'Adding...' : 'Add PI'}
+                </button>
+              </div>
+            </form>
+            <div className="space-y-3">
+              {programIncrements.map((pi) => {
+                const isEditing = editingPiId === pi.id;
+                const editData = isEditing && editingPiData ? editingPiData : pi;
 
-            <div className="space-y-4">
-              {epics.map((epic) => (
-                <div key={epic.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div>
-                      <h3 className="font-semibold">{epic.name}</h3>
-                      <p className="text-sm text-slate-500">{epic.owner}</p>
+                return (
+                  <div key={pi.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                    <div className="grid gap-2 grid-cols-1 md:grid-cols-[1fr_1fr_1fr]">
+                      <input
+                        value={editData.name ?? pi.name}
+                        onChange={(event) => {
+                          setEditingPiId(pi.id);
+                          setEditingPiData((current) => ({ ...current, name: event.target.value }));
+                        }}
+                        className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+                      />
+                      <input
+                        type="date"
+                        value={editData.startDate ?? pi.startDate}
+                        onChange={(event) => {
+                          setEditingPiId(pi.id);
+                          setEditingPiData((current) => ({ ...current, startDate: event.target.value }));
+                        }}
+                        className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+                      />
+                      <input
+                        type="date"
+                        value={editData.endDate ?? pi.endDate}
+                        onChange={(event) => {
+                          setEditingPiId(pi.id);
+                          setEditingPiData((current) => ({ ...current, endDate: event.target.value }));
+                        }}
+                        className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+                      />
                     </div>
-                    <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700">{epic.status}</span>
+                    <div className="flex gap-2">
+                      {isEditing && (
+                        <button
+                          type="button"
+                          disabled={piActionLoading[pi.id]}
+                          onClick={async () => {
+                            await handleUpdateProgramIncrement(pi.id, { ...pi, ...editingPiData });
+                            setEditingPiId(null);
+                            setEditingPiData(null);
+                          }}
+                          className="flex-1 md:flex-none rounded border border-brand-200 bg-brand-50 px-3 py-1 text-xs font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {piActionLoading[pi.id] ? 'Saving...' : 'Save changes'}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={piActionLoading[pi.id]}
+                        onClick={() => handleDeleteProgramIncrement(pi.id)}
+                        className="flex-1 md:flex-none rounded border border-red-200 bg-red-50 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {piActionLoading[pi.id] ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </div>
                   </div>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+        )}
 
-                  <div className="relative h-6 overflow-hidden rounded-full bg-slate-200">
-                    <div
-                      className="absolute top-0 h-full rounded-full bg-brand-600"
-                      style={{
-                        left: `${calculateLeft(epic.start, roadmapMeta.startDate, roadmapMeta.endDate)}%`,
-                        width: `${calculateWidth(epic.start, epic.end, roadmapMeta.startDate, roadmapMeta.endDate)}%`,
-                      }}
-                    />
-                  </div>
-
-                  <div className="mt-2 flex justify-between text-xs text-slate-500">
-                    <span>{epic.start}</span>
-                    <span>{epic.end}</span>
-                  </div>
+        {planningTab === 'epics' && (
+        <section className="space-y-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-soft">
+            <h2 className="mb-4 text-xl font-semibold">Epics</h2>
+            <form onSubmit={handleCreateEpic} className="mb-4 flex gap-2">
+              <input
+                name="epic-title"
+                placeholder="Add epic"
+                className="flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
+              />
+              <button type="submit" className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white">Add</button>
+            </form>
+            <div className="space-y-3">
+              {epics.map((epic) => (
+                <div key={epic.id} className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 grid-cols-1 lg:grid-cols-[1.3fr_0.8fr_0.8fr_0.8fr_auto]">
+                  <input
+                    value={epic.name}
+                    onChange={(event) => handleUpdateEpic(epic.id, { ...epic, name: event.target.value })}
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+                  />
+                  <input
+                    type="date"
+                    value={epic.start}
+                    onChange={(event) => handleUpdateEpic(epic.id, { ...epic, start: event.target.value })}
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+                  />
+                  <input
+                    type="date"
+                    value={epic.end}
+                    onChange={(event) => handleUpdateEpic(epic.id, { ...epic, end: event.target.value })}
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+                  />
+                  <select
+                    value={epic.status}
+                    onChange={(event) => handleUpdateEpic(epic.id, { ...epic, status: event.target.value })}
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+                  >
+                    <option value="Planned">Planned</option>
+                    <option value="On track">On track</option>
+                    <option value="At risk">At risk</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteEpic(epic.id)}
+                    className="rounded border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700"
+                  >
+                    Delete
+                  </button>
                 </div>
               ))}
             </div>
-
-            <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-soft">
-              <h2 className="mb-4 text-xl font-semibold">Epics</h2>
-              <form onSubmit={handleCreateEpic} className="mb-4 flex gap-2">
-                <input
-                  name="epic-title"
-                  placeholder="Add epic"
-                  className="flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
-                />
-                <button type="submit" className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white">Add</button>
-              </form>
-              <div className="space-y-3">
-                {epics.map((epic) => (
-                  <div key={epic.id} className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 md:grid-cols-[1.3fr_0.8fr_0.8fr_0.8fr_auto]">
-                    <input
-                      value={epic.name}
-                      onChange={(event) => handleUpdateEpic(epic.id, { ...epic, name: event.target.value })}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                    />
-                    <input
-                      type="date"
-                      value={epic.start}
-                      onChange={(event) => handleUpdateEpic(epic.id, { ...epic, start: event.target.value })}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                    />
-                    <input
-                      type="date"
-                      value={epic.end}
-                      onChange={(event) => handleUpdateEpic(epic.id, { ...epic, end: event.target.value })}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                    />
-                    <select
-                      value={epic.status}
-                      onChange={(event) => handleUpdateEpic(epic.id, { ...epic, status: event.target.value })}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                    >
-                      <option value="Planned">Planned</option>
-                      <option value="On track">On track</option>
-                      <option value="At risk">At risk</option>
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteEpic(epic.id)}
-                      className="rounded border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-soft">
-              <h2 className="mb-4 text-xl font-semibold">Program increments</h2>
-              <form onSubmit={handleCreateProgramIncrement} className="mb-4 grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]">
-                <input name="pi-name" placeholder="PI name" className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm" />
-                <input name="pi-start" type="date" defaultValue={roadmapMeta.startDate} className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm" />
-                <input name="pi-end" type="date" defaultValue={roadmapMeta.endDate} className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm" />
-                <button type="submit" className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-white">Add</button>
-              </form>
-              <div className="space-y-3">
-                {programIncrements.map((pi) => (
-                  <div key={pi.id} className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 md:grid-cols-[1fr_1fr_1fr_auto]">
-                    <input
-                      value={pi.name}
-                      onChange={(event) => handleUpdateProgramIncrement(pi.id, { ...pi, name: event.target.value })}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                    />
-                    <input
-                      type="date"
-                      value={pi.startDate}
-                      onChange={(event) => handleUpdateProgramIncrement(pi.id, { ...pi, startDate: event.target.value })}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                    />
-                    <input
-                      type="date"
-                      value={pi.endDate}
-                      onChange={(event) => handleUpdateProgramIncrement(pi.id, { ...pi, endDate: event.target.value })}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteProgramIncrement(pi.id)}
-                      className="rounded border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
           </div>
+        </section>
+          )}
 
+        {(planningTab === 'priority' || planningTab === 'backlog') && (
+        <section className="grid gap-6 lg:grid-cols-1">
           <div className="space-y-6">
+            {planningTab === 'priority' && (
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-soft">
               <h2 className="mb-4 text-xl font-semibold">Priority stack</h2>
-              <form onSubmit={handleCreateFeature} className="mb-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <div className="flex gap-2">
-                  <input
-                    value={featureForm.title}
-                    onChange={(event) => setFeatureForm((current) => ({ ...current, title: event.target.value }))}
-                    placeholder="Add feature name"
-                    className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
-                  />
-                  <button type="submit" className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white">Add feature</button>
+              {planningMessage && (
+                <div className="mb-4 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-sm text-brand-700" role="status">
+                  {planningMessage}
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    value={featureForm.team}
-                    onChange={(event) => setFeatureForm((current) => ({ ...current, team: event.target.value }))}
-                    placeholder="Team"
-                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
-                  />
-                  <input
-                    value={featureForm.pi}
-                    onChange={(event) => setFeatureForm((current) => ({ ...current, pi: event.target.value }))}
-                    placeholder="PI"
-                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
-                  />
-                </div>
-              </form>
+              )}
 
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleFeatureDragEnd}>
-                <SortableContext items={features.map((feature) => feature.id)} strategy={rectSortingStrategy}>
-                  <div className="space-y-3">
-                    {features.map((feature) => (
-                      <div key={feature.id} className="space-y-2">
-                        <SortableFeatureCard feature={feature} onSelect={() => {}} />
-                        <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 md:grid-cols-[1.4fr_0.8fr_0.9fr_0.9fr_0.9fr_auto]">
-                          <input
-                            value={feature.name}
-                            onChange={(event) => handleUpdateFeature(feature.id, { ...feature, name: event.target.value })}
-                            className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                          />
-                          <input
-                            value={feature.pi}
-                            onChange={(event) => handleUpdateFeature(feature.id, { ...feature, pi: event.target.value })}
-                            className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                            placeholder="PI"
-                          />
-                          <input
-                            type="date"
-                            value={feature.start}
-                            onChange={(event) => handleUpdateFeature(feature.id, { ...feature, start: event.target.value })}
-                            className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                          />
-                          <input
-                            type="date"
-                            value={feature.end}
-                            onChange={(event) => handleUpdateFeature(feature.id, { ...feature, end: event.target.value })}
-                            className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                          />
-                          <select
-                            value={feature.status}
-                            onChange={(event) => handleUpdateFeature(feature.id, { ...feature, status: event.target.value })}
-                            className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                          >
-                            <option value="New">New</option>
-                            <option value="Planned">Planned</option>
-                            <option value="Committed">Committed</option>
-                            <option value="In progress">In progress</option>
-                          </select>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteFeature(feature.id)}
-                            className="rounded border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700"
-                          >
-                            Delete
-                          </button>
+              <div className="space-y-5">
+                {featureGroups.map(({ epic, features: epicFeatures }) => (
+                  <div key={epic.id || 'unassigned'} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <h3 className="mb-3 font-semibold text-slate-700">{epic.name}</h3>
+                      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => handleFeatureDragEnd(event, epic.id)}>
+                        <SortableContext items={epicFeatures.map((feature) => feature.id)} strategy={verticalListSortingStrategy}>
+                        <div className="space-y-3">
+                          {epicFeatures.map((feature) => (
+                            <SortableFeatureCard key={feature.id} feature={feature}>
+                              <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-2 md:grid-cols-[1.2fr_1fr_0.9fr_0.9fr_0.9fr]">
+                                <input value={feature.name} onChange={(event) => handleUpdateFeature(feature.id, { name: event.target.value })} className="rounded border border-slate-300 px-2 py-1 text-sm" />
+                                <select value={feature.epicId} onChange={(event) => handleUpdateFeature(feature.id, { epicId: event.target.value, epic: epics.find((item) => item.id === event.target.value)?.name ?? 'Unassigned' })} className="rounded border border-slate-300 px-2 py-1 text-sm">
+                                  <option value="">Unassigned</option>
+                                  {epics.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                                </select>
+                                <input type="date" value={feature.start} onChange={(event) => handleUpdateFeature(feature.id, { start: event.target.value })} className="rounded border border-slate-300 px-2 py-1 text-sm" />
+                                <input type="date" value={feature.end} onChange={(event) => handleUpdateFeature(feature.id, { end: event.target.value })} className="rounded border border-slate-300 px-2 py-1 text-sm" />
+                                <select value={programIncrements.find((pi) => pi.name === feature.pi)?.id ?? ''} onChange={(event) => handleUpdateFeature(feature.id, { pi: programIncrements.find((pi) => pi.id === event.target.value)?.name ?? '' })} className="rounded border border-slate-300 px-2 py-1 text-sm">
+                                  <option value="">Program increment</option>
+                                  {programIncrements.map((pi) => <option key={pi.id} value={pi.id}>{pi.name}</option>)}
+                                </select>
+                                <select value={feature.status} onChange={(event) => handleUpdateFeature(feature.id, { status: event.target.value })} className="rounded border border-slate-300 px-2 py-1 text-sm">
+                                  <option value="Planned">Planned</option>
+                                  <option value="Committed">Committed</option>
+                                  <option value="In progress">In progress</option>
+                                  <option value="Blocked">Blocked</option>
+                                </select>
+                              </div>
+                            </SortableFeatureCard>
+                          ))}
                         </div>
-                      </div>
-                    ))}
+                        </SortableContext>
+                      </DndContext>
                   </div>
-                </SortableContext>
-              </DndContext>
+                ))}
+              </div>
             </div>
+            )}
 
+            {planningTab === 'backlog' && (
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-soft">
               <h2 className="mb-4 text-xl font-semibold">Backlog</h2>
               <form onSubmit={handleCreateBacklog} className="mb-4 flex gap-2">
@@ -900,6 +1023,16 @@ export default function HomePage() {
                   placeholder="Add backlog item"
                   className="flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
                 />
+                <input
+                  list="backlog-epics"
+                  value={backlogForm.epicName}
+                  onChange={(event) => setBacklogForm((current) => ({ ...current, epicName: event.target.value }))}
+                  placeholder="Search epic"
+                  className="w-44 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+                />
+                <datalist id="backlog-epics">
+                  {epics.map((epic) => <option key={epic.id} value={epic.name} />)}
+                </datalist>
                 <select
                   value={backlogForm.status}
                   onChange={(event) => setBacklogForm((current) => ({ ...current, status: event.target.value }))}
@@ -907,7 +1040,6 @@ export default function HomePage() {
                 >
                   <option value="New">New</option>
                   <option value="Ready">Ready</option>
-                  <option value="In progress">In progress</option>
                 </select>
                 <button type="submit" className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-white">Add</button>
               </form>
@@ -919,7 +1051,6 @@ export default function HomePage() {
                       <div key={item.id} className="space-y-2">
                         <SortableBacklogCard
                           item={item}
-                          onSelect={() => setSelectedBacklogId((current) => (current === item.id ? null : item.id))}
                         />
                         <div className="flex gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
                           <input
@@ -929,13 +1060,25 @@ export default function HomePage() {
                           />
                           <select
                             value={item.status}
-                            onChange={(event) => handleUpdateBacklog(item.id, { ...item, status: event.target.value })}
+                            onChange={(event) => handleBacklogStatusChange(item, event.target.value)}
                             className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
                           >
                             <option value="New">New</option>
                             <option value="Ready">Ready</option>
-                            <option value="In progress">In progress</option>
                           </select>
+                          <input
+                            list="backlog-epics"
+                            value={item.epicName}
+                            onChange={(event) => {
+                              const selectedEpic = epics.find((epic) => epic.name === event.target.value);
+                              handleUpdateBacklog(item.id, {
+                                epicId: selectedEpic?.id ?? '',
+                                epicName: selectedEpic?.name ?? '',
+                              });
+                            }}
+                            placeholder="Search epic"
+                            className="w-40 rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+                          />
                           <button
                             type="button"
                             onClick={() => handleDeleteBacklog(item.id)}
@@ -944,23 +1087,16 @@ export default function HomePage() {
                             Delete
                           </button>
                         </div>
-                        {selectedBacklogId === item.id && (
-                          <button
-                            type="button"
-                            onClick={() => handleFeaturePromotion(item.id, features[0]?.id)}
-                            className="w-full rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-left text-sm font-medium text-brand-700"
-                          >
-                            Promote to roadmap as #{features.length + 1}
-                          </button>
-                        )}
                       </div>
                     ))}
                   </div>
                 </SortableContext>
               </DndContext>
             </div>
+            )}
           </div>
         </section>
+        )}
       </div>
     </main>
   );
