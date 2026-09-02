@@ -4,6 +4,7 @@ out
 npm-debug.log*
 .env*
 .DS_Store
+.data/uploads
 
 
 /app/generated/prisma

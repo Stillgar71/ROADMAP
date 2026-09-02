@@ -71,6 +71,8 @@ model Epic {
   roadmap     Roadmap  @relation(fields: [roadmapId], references: [id])
   title       String
   description String?
+  acceptanceCriteria String?
+  notes       String?
   status      String   @default("planned")
   startDate   String?
   endDate     String?
@@ -88,6 +90,8 @@ model Feature {
   epic        Epic?    @relation(fields: [epicId], references: [id])
   title       String
   description String?
+  acceptanceCriteria String?
+  notes       String?
   status      String   @default("planned")
   startDate   String?
   endDate     String?
@@ -95,6 +99,19 @@ model Feature {
   pi          String?
   team        String?
   milestones  Milestone[]
+  tasks       Task[]
+  createdAt   DateTime @default(now())
+}
+
+model Task {
+  id          String   @id @default(cuid())
+  featureId   String
+  feature     Feature  @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  status      String   @default("Planned")
+  startDate   String
+  endDate     String
   createdAt   DateTime @default(now())
 }
 

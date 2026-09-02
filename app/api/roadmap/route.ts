@@ -130,7 +130,13 @@ async function getRoadmapData() {
     where: { organizationId: organization.id },
     include: {
       epics: { orderBy: { rank: 'asc' } },
-      features: { include: { epic: { select: { id: true, title: true } } }, orderBy: { rank: 'asc' } },
+      features: {
+        include: {
+          epic: { select: { id: true, title: true } },
+          tasks: { orderBy: { startDate: 'asc' } },
+        },
+        orderBy: { rank: 'asc' },
+      },
       programIncrements: true,
       milestones: { include: { feature: { select: { id: true, title: true } } }, orderBy: { date: 'asc' } },
     },
@@ -262,7 +268,7 @@ export async function POST(request: Request) {
       }
 
       case 'update-epic': {
-        const { id, title, status, startDate, endDate } = body ?? {};
+        const { id, title, description, acceptanceCriteria, notes, status, startDate, endDate } = body ?? {};
         if (!id) {
           return NextResponse.json({ error: 'Epic id required' }, { status: 400 });
         }
@@ -271,6 +277,9 @@ export async function POST(request: Request) {
           where: { id },
           data: {
             title: title ?? undefined,
+            description: description ?? undefined,
+            acceptanceCriteria: acceptanceCriteria ?? undefined,
+            notes: notes ?? undefined,
             status: status ?? undefined,
             startDate: startDate ?? undefined,
             endDate: endDate ?? undefined,
@@ -397,12 +406,12 @@ export async function POST(request: Request) {
       }
 
       case 'update-feature': {
-        const { id, title, team, pi, status, startDate, endDate, epicId } = body ?? {};
+        const { id, title, description, acceptanceCriteria, notes, team, pi, status, startDate, endDate, epicId } = body ?? {};
         if (!id) {
           return NextResponse.json({ error: 'Feature id required' }, { status: 400 });
         }
-        if (status && !['Planned', 'Committed', 'In progress', 'Blocked'].includes(status)) {
-          return NextResponse.json({ error: 'Feature status must be Planned, Committed, In progress, or Blocked' }, { status: 400 });
+        if (status && !['Planned', 'Committed', 'In progress', 'Blocked', 'Completed'].includes(status)) {
+          return NextResponse.json({ error: 'Feature status must be Planned, Committed, In progress, Blocked, or Completed' }, { status: 400 });
         }
 
         const existingFeature = await prisma.feature.findUnique({ where: { id } });
@@ -418,6 +427,9 @@ export async function POST(request: Request) {
           where: { id },
           data: {
             title: title ?? undefined,
+            description: description ?? undefined,
+            acceptanceCriteria: acceptanceCriteria ?? undefined,
+            notes: notes ?? undefined,
             team: team ?? undefined,
             pi: pi ?? undefined,
             status: status ?? undefined,
@@ -438,6 +450,48 @@ export async function POST(request: Request) {
         }
 
         await prisma.feature.delete({ where: { id } });
+        return NextResponse.json({ success: true });
+      }
+
+      case 'create-task': {
+        const { featureId, title, status = 'Planned', startDate, endDate } = body ?? {};
+        if (!featureId || !title || !String(title).trim() || !startDate || !endDate) {
+          return NextResponse.json({ error: 'Feature, task title, start date, and end date are required' }, { status: 400 });
+        }
+        if (!['Planned', 'Committed', 'In progress', 'Blocked', 'Completed'].includes(status)) {
+          return NextResponse.json({ error: 'Task status must be Planned, Committed, In progress, Blocked, or Completed' }, { status: 400 });
+        }
+
+        const task = await prisma.task.create({
+          data: { featureId, title: String(title).trim(), status, startDate, endDate },
+        });
+        return NextResponse.json({ task });
+      }
+
+      case 'update-task': {
+        const { id, title, description, status, startDate, endDate } = body ?? {};
+        if (!id) return NextResponse.json({ error: 'Task id required' }, { status: 400 });
+        if (status && !['Planned', 'Committed', 'In progress', 'Blocked', 'Completed'].includes(status)) {
+          return NextResponse.json({ error: 'Task status must be Planned, Committed, In progress, Blocked, or Completed' }, { status: 400 });
+        }
+
+        const task = await prisma.task.update({
+          where: { id },
+          data: {
+            title: title ?? undefined,
+            description: description ?? undefined,
+            status: status ?? undefined,
+            startDate: startDate ?? undefined,
+            endDate: endDate ?? undefined,
+          },
+        });
+        return NextResponse.json({ task });
+      }
+
+      case 'delete-task': {
+        const { id } = body ?? {};
+        if (!id) return NextResponse.json({ error: 'Task id required' }, { status: 400 });
+        await prisma.task.delete({ where: { id } });
         return NextResponse.json({ success: true });
       }
 

@@ -21,3 +21,18 @@ select,
 textarea {
   font: inherit;
 }
+
+.rich-text-content > :first-child {
+  margin-top: 0;
+}
+
+.rich-text-content > :last-child {
+  margin-bottom: 0;
+}
+
+.rich-text-content img {
+  display: block;
+  height: auto;
+  margin: 0.75rem 0;
+  max-width: 100%;
+}
